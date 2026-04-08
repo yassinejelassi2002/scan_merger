@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>scan_merger</name>
+  <version>0.0.1</version>
+  <description>ROS 2 package containing a LiDAR scan merger node.</description>
+
+  <maintainer email="user@example.com">Workspace User</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen3_cmake_module</depend>
+  <depend>nav_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <build_depend>libpcl-all-dev</build_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
