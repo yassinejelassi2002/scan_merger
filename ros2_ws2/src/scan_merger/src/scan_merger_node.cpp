@@ -1,4 +1,5 @@
 #include <deque>
+#include <filesystem>
 #include <string>
 
 #include <Eigen/Dense>
@@ -48,6 +49,10 @@ public:
     merged_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/merged_map",
       rclcpp::QoS(1));
+
+    rclcpp::on_shutdown([this]() {
+      saveFinalMergedMap();
+    });
 
     if (max_scans_ <= 0) {
       RCLCPP_INFO(
@@ -146,24 +151,50 @@ private:
     out_msg.header.frame_id = "odom";
     out_msg.header.stamp = this->now();
     merged_pub_->publish(out_msg);
+  }
 
-    if (save_ply_) {
-      const int result = pcl::io::savePLYFileBinary(ply_output_path_, merged);
-      if (result == 0) {
-        RCLCPP_INFO_THROTTLE(
+  void saveFinalMergedMap()
+  {
+    if (!save_ply_ || final_ply_saved_) {
+      return;
+    }
+
+    pcl::PointCloud<pcl::PointXYZ> merged;
+    for (const auto & entry : buffer_) {
+      pcl::PointCloud<pcl::PointXYZ> cloud_in;
+      pcl::PointCloud<pcl::PointXYZ> cloud_out;
+      pcl::fromROSMsg(entry.cloud, cloud_in);
+      pcl::transformPointCloud(cloud_in, cloud_out, entry.pose);
+      merged += cloud_out;
+    }
+
+    const std::filesystem::path output_path(ply_output_path_);
+    const std::filesystem::path parent = output_path.parent_path();
+    if (!parent.empty()) {
+      std::error_code ec;
+      std::filesystem::create_directories(parent, ec);
+      if (ec) {
+        RCLCPP_ERROR(
           this->get_logger(),
-          *this->get_clock(),
-          5000,
-          "Saved merged map to PLY: %s",
-          ply_output_path_.c_str());
-      } else {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(),
-          *this->get_clock(),
-          5000,
-          "Failed to save PLY file: %s",
-          ply_output_path_.c_str());
+          "Failed to create PLY output directory '%s': %s",
+          parent.string().c_str(),
+          ec.message().c_str());
+        return;
       }
+    }
+
+    const int result = pcl::io::savePLYFileBinary(ply_output_path_, merged);
+    if (result == 0) {
+      final_ply_saved_ = true;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Saved final merged map to PLY: %s",
+        ply_output_path_.c_str());
+    } else {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Failed to save final PLY file: %s",
+        ply_output_path_.c_str());
     }
   }
 
@@ -192,6 +223,7 @@ private:
   double min_dist_trigger_;
   double min_time_trigger_;
   bool save_ply_;
+  bool final_ply_saved_ = false;
   std::string ply_output_path_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
