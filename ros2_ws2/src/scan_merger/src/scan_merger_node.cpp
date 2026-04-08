@@ -1,5 +1,6 @@
 #include <deque>
 #include <filesystem>
+#include <iostream>
 #include <string>
 
 #include <Eigen/Dense>
@@ -50,10 +51,6 @@ public:
       "/merged_map",
       rclcpp::QoS(1));
 
-    rclcpp::on_shutdown([this]() {
-      saveFinalMergedMap();
-    });
-
     if (max_scans_ <= 0) {
       RCLCPP_INFO(
         this->get_logger(),
@@ -67,6 +64,35 @@ public:
         max_scans_,
         min_dist_trigger_,
         min_time_trigger_);
+    }
+  }
+
+  void saveFinalMergedMap()
+  {
+    if (!save_ply_ || final_ply_saved_) {
+      return;
+    }
+
+    const std::filesystem::path output_path(ply_output_path_);
+    const std::filesystem::path parent = output_path.parent_path();
+    if (!parent.empty()) {
+      std::error_code ec;
+      std::filesystem::create_directories(parent, ec);
+      if (ec) {
+        std::cerr << "Failed to create PLY output directory '"
+                  << parent.string() << "': " << ec.message() << '\n';
+        return;
+      }
+    }
+
+    const int result = pcl::io::savePLYFileBinary(ply_output_path_, accumulated_map_);
+    if (result == 0) {
+      final_ply_saved_ = true;
+      std::cout << "Saved final merged map to PLY: "
+                << ply_output_path_ << '\n';
+    } else {
+      std::cerr << "Failed to save final PLY file: "
+                << ply_output_path_ << '\n';
     }
   }
 
@@ -108,8 +134,15 @@ private:
       entry.pose = latest_pose_;
       buffer_.push_back(entry);
 
+      pcl::PointCloud<pcl::PointXYZ> cloud_in;
+      pcl::PointCloud<pcl::PointXYZ> cloud_world;
+      pcl::fromROSMsg(entry.cloud, cloud_in);
+      pcl::transformPointCloud(cloud_in, cloud_world, entry.pose);
+      accumulated_map_ += cloud_world;
+
       if (max_scans_ > 0 && static_cast<int>(buffer_.size()) > max_scans_) {
         buffer_.pop_front();
+        rebuildAccumulatedMap();
       }
 
       last_saved_pos_ = latest_pos_;
@@ -118,15 +151,17 @@ private:
       if (max_scans_ <= 0) {
         RCLCPP_INFO(
           this->get_logger(),
-          "Scan saved | buffer=%zu/unlimited | dist_since_last=%.2fm",
+          "Scan saved | scans=%zu/unlimited | points=%zu | dist_since_last=%.2fm",
           buffer_.size(),
+          accumulated_map_.size(),
           dist);
       } else {
         RCLCPP_INFO(
           this->get_logger(),
-          "Scan saved | buffer=%zu/%d | dist_since_last=%.2fm",
+          "Scan saved | scans=%zu/%d | points=%zu | dist_since_last=%.2fm",
           buffer_.size(),
           max_scans_,
+          accumulated_map_.size(),
           dist);
       }
 
@@ -136,65 +171,23 @@ private:
 
   void publishMergedMap()
   {
-    pcl::PointCloud<pcl::PointXYZ> merged;
-
-    for (const auto & entry : buffer_) {
-      pcl::PointCloud<pcl::PointXYZ> cloud_in;
-      pcl::PointCloud<pcl::PointXYZ> cloud_out;
-      pcl::fromROSMsg(entry.cloud, cloud_in);
-      pcl::transformPointCloud(cloud_in, cloud_out, entry.pose);
-      merged += cloud_out;
-    }
-
     sensor_msgs::msg::PointCloud2 out_msg;
-    pcl::toROSMsg(merged, out_msg);
+    pcl::toROSMsg(accumulated_map_, out_msg);
     out_msg.header.frame_id = "odom";
     out_msg.header.stamp = this->now();
     merged_pub_->publish(out_msg);
   }
 
-  void saveFinalMergedMap()
+  void rebuildAccumulatedMap()
   {
-    if (!save_ply_ || final_ply_saved_) {
-      return;
-    }
+    accumulated_map_.clear();
 
-    pcl::PointCloud<pcl::PointXYZ> merged;
     for (const auto & entry : buffer_) {
       pcl::PointCloud<pcl::PointXYZ> cloud_in;
-      pcl::PointCloud<pcl::PointXYZ> cloud_out;
+      pcl::PointCloud<pcl::PointXYZ> cloud_world;
       pcl::fromROSMsg(entry.cloud, cloud_in);
-      pcl::transformPointCloud(cloud_in, cloud_out, entry.pose);
-      merged += cloud_out;
-    }
-
-    const std::filesystem::path output_path(ply_output_path_);
-    const std::filesystem::path parent = output_path.parent_path();
-    if (!parent.empty()) {
-      std::error_code ec;
-      std::filesystem::create_directories(parent, ec);
-      if (ec) {
-        RCLCPP_ERROR(
-          this->get_logger(),
-          "Failed to create PLY output directory '%s': %s",
-          parent.string().c_str(),
-          ec.message().c_str());
-        return;
-      }
-    }
-
-    const int result = pcl::io::savePLYFileBinary(ply_output_path_, merged);
-    if (result == 0) {
-      final_ply_saved_ = true;
-      RCLCPP_INFO(
-        this->get_logger(),
-        "Saved final merged map to PLY: %s",
-        ply_output_path_.c_str());
-    } else {
-      RCLCPP_ERROR(
-        this->get_logger(),
-        "Failed to save final PLY file: %s",
-        ply_output_path_.c_str());
+      pcl::transformPointCloud(cloud_in, cloud_world, entry.pose);
+      accumulated_map_ += cloud_world;
     }
   }
 
@@ -213,6 +206,7 @@ private:
   }
 
   std::deque<StampedScan> buffer_;
+  pcl::PointCloud<pcl::PointXYZ> accumulated_map_;
   Eigen::Matrix4f latest_pose_ = Eigen::Matrix4f::Identity();
   Eigen::Vector3f latest_pos_ = Eigen::Vector3f::Zero();
   Eigen::Vector3f last_saved_pos_ = Eigen::Vector3f::Zero();
@@ -234,7 +228,9 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ScanMergerNode>());
+  auto node = std::make_shared<ScanMergerNode>();
+  rclcpp::spin(node);
+  node->saveFinalMergedMap();
   rclcpp::shutdown();
   return 0;
 }
