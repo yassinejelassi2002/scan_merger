@@ -8,6 +8,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <pcl/common/transforms.h>
+#include <pcl/io/ply_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -23,12 +24,16 @@ public:
     this->declare_parameter("min_time_trigger", 0.5);
     this->declare_parameter("lidar_topic", "/lidar/points");
     this->declare_parameter("odom_topic", "/genz/odometry");
+    this->declare_parameter("save_ply", true);
+    this->declare_parameter("ply_output_path", "merged_map.ply");
 
     max_scans_ = this->get_parameter("max_scans").as_int();
     min_dist_trigger_ = this->get_parameter("min_dist_trigger").as_double();
     min_time_trigger_ = this->get_parameter("min_time_trigger").as_double();
     const std::string lidar_topic = this->get_parameter("lidar_topic").as_string();
     const std::string odom_topic = this->get_parameter("odom_topic").as_string();
+    save_ply_ = this->get_parameter("save_ply").as_bool();
+    ply_output_path_ = this->get_parameter("ply_output_path").as_string();
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       odom_topic,
@@ -141,6 +146,25 @@ private:
     out_msg.header.frame_id = "odom";
     out_msg.header.stamp = this->now();
     merged_pub_->publish(out_msg);
+
+    if (save_ply_) {
+      const int result = pcl::io::savePLYFileBinary(ply_output_path_, merged);
+      if (result == 0) {
+        RCLCPP_INFO_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          5000,
+          "Saved merged map to PLY: %s",
+          ply_output_path_.c_str());
+      } else {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          5000,
+          "Failed to save PLY file: %s",
+          ply_output_path_.c_str());
+      }
+    }
   }
 
   Eigen::Matrix4f poseToMatrix(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -167,6 +191,8 @@ private:
   int max_scans_;
   double min_dist_trigger_;
   double min_time_trigger_;
+  bool save_ply_;
+  std::string ply_output_path_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr scan_sub_;
