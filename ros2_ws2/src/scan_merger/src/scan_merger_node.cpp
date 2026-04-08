@@ -20,10 +20,10 @@ public:
   ScanMergerNode()
   : Node("scan_merger_node")
   {
-    this->declare_parameter("max_scans", 50);
+    this->declare_parameter("max_scans", 400);
     this->declare_parameter("min_dist_trigger", 0.2);
     this->declare_parameter("min_time_trigger", 0.5);
-    this->declare_parameter("lidar_topic", "/lidar/points");
+    this->declare_parameter("lidar_topic", "/in/lidar_top/points/filtered");
     this->declare_parameter("odom_topic", "/genz/odometry");
     this->declare_parameter("save_ply", true);
     this->declare_parameter("ply_output_path", "merged_map.ply");
